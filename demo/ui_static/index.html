@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SE-Explorer Agent</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <h1>SE-Explorer Agent</h1>
+            <p id="statusText">Ready</p>
+          </div>
+          <button id="refreshReportsButton" type="button">Reports</button>
+        </header>
+
+        <section class="control-band">
+          <div class="field field-wide">
+            <label for="questionInput">Task</label>
+            <textarea id="questionInput" rows="4">software architecture</textarea>
+          </div>
+          <div class="field">
+            <label for="scenarioSelect">Scenario</label>
+            <select id="scenarioSelect">
+              <option value="docs">docs</option>
+              <option value="code">code</option>
+              <option value="fix">fix</option>
+              <option value="test">test</option>
+              <option value="multimodal">multimodal</option>
+            </select>
+          </div>
+          <div class="field compact">
+            <label for="maxStepsInput">Steps</label>
+            <input id="maxStepsInput" type="number" min="1" max="12" value="3" />
+          </div>
+          <div class="field">
+            <label for="taskIdInput">Task ID</label>
+            <input id="taskIdInput" type="text" value="ui_demo_docs" />
+          </div>
+          <div class="actions">
+            <label class="checkline">
+              <input id="mockInput" type="checkbox" checked />
+              <span>Mock</span>
+            </label>
+            <button id="runButton" type="button">Run</button>
+          </div>
+        </section>
+
+        <nav id="exampleBar" class="example-bar"></nav>
+
+        <section class="main-grid">
+          <section class="answer-panel">
+            <div class="section-head">
+              <h2>Answer</h2>
+              <span id="verifierBadge" class="badge neutral">pending</span>
+            </div>
+            <pre id="answerOutput"></pre>
+            <div class="section-head small">
+              <h3>Verifier</h3>
+            </div>
+            <pre id="verificationOutput"></pre>
+          </section>
+
+          <section class="evidence-panel">
+            <div class="section-head">
+              <h2>Evidence</h2>
+              <select id="evidenceFilter">
+                <option value="all">all</option>
+                <option value="doc">doc</option>
+                <option value="code">code</option>
+                <option value="file">file</option>
+                <option value="patch">patch</option>
+                <option value="test">test</option>
+                <option value="test_run">test_run</option>
+                <option value="table">table</option>
+                <option value="figure">figure</option>
+              </select>
+            </div>
+            <div id="evidenceList" class="list"></div>
+          </section>
+        </section>
+
+        <section class="lower-grid">
+          <section>
+            <div class="section-head">
+              <h2>Trajectory</h2>
+              <span id="stepCount" class="muted">0 steps</span>
+            </div>
+            <div id="trajectoryList" class="list trajectory-list"></div>
+          </section>
+
+          <section>
+            <div class="section-head">
+              <h2>Eval Reports</h2>
+              <select id="reportSelect"></select>
+            </div>
+            <pre id="reportOutput" class="report-output"></pre>
+          </section>
+        </section>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
