@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from typing import Protocol
 
 
@@ -14,10 +15,24 @@ class LLMClient:
         model: str | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
+        max_retries: int | None = None,
+        retry_base_seconds: float | None = None,
+        request_timeout: float | None = None,
     ) -> None:
         self.model = model or os.environ.get("OPENAI_MODEL")
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self.base_url = base_url or os.environ.get("OPENAI_BASE_URL")
+        self.max_retries = max_retries if max_retries is not None else int(os.environ.get("LLM_MAX_RETRIES", "3"))
+        self.retry_base_seconds = (
+            retry_base_seconds
+            if retry_base_seconds is not None
+            else float(os.environ.get("LLM_RETRY_BASE_SECONDS", "2"))
+        )
+        self.request_timeout = (
+            request_timeout
+            if request_timeout is not None
+            else float(os.environ.get("LLM_REQUEST_TIMEOUT", "120"))
+        )
 
         if not self.model:
             raise ValueError("OPENAI_MODEL is required for real Agent Loop mode")
@@ -31,13 +46,60 @@ class LLMClient:
         except ImportError as exc:
             raise RuntimeError("Package 'openai' is required. Run: pip install openai") from exc
 
-        client = OpenAI(api_key=self.api_key, base_url=self.base_url)
-        response = client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=0,
-        )
+        client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=self.request_timeout)
+        response = self._complete_with_retry(client, messages)
         return response.choices[0].message.content or ""
+
+    def _complete_with_retry(self, client: object, messages: list[dict[str, str]]) -> object:
+        total_attempts = max(1, self.max_retries + 1)
+        last_error: Exception | None = None
+        for attempt in range(1, total_attempts + 1):
+            try:
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0,
+                )
+                if attempt > 1:
+                    print(f"[llm_client] retry success attempt={attempt}/{total_attempts}")
+                return response
+            except Exception as exc:
+                last_error = exc
+                if attempt >= total_attempts or not _is_transient_llm_error(exc):
+                    print(f"[llm_client] request failed attempt={attempt}/{total_attempts}, error={exc}")
+                    raise
+                wait_seconds = _retry_wait_seconds(attempt, self.retry_base_seconds)
+                print(
+                    "[llm_client] transient error "
+                    f"attempt={attempt}/{total_attempts}, wait={wait_seconds:g}s, error={exc}"
+                )
+                time.sleep(wait_seconds)
+                print("[llm_client] retry after transient error")
+        raise RuntimeError(f"LLM request failed after retry: {last_error}")
+
+
+def _retry_wait_seconds(attempt: int, base_seconds: float) -> float:
+    waits = [base_seconds, base_seconds * 2.5, base_seconds * 5]
+    index = min(max(attempt - 1, 0), len(waits) - 1)
+    return max(0, waits[index])
+
+
+def _is_transient_llm_error(error: Exception) -> bool:
+    name = error.__class__.__name__.lower()
+    text = str(error).lower()
+    transient_names = [
+        "apiconnectionerror",
+        "apitimeouterror",
+        "ratelimiterror",
+        "timeout",
+        "connection",
+    ]
+    if any(item in name for item in transient_names):
+        return True
+    if "connection error" in text or "timeout" in text or "rate limit" in text:
+        return True
+    status_code = getattr(error, "status_code", None)
+    return isinstance(status_code, int) and status_code >= 500
 
 
 class MockLLMClient:
@@ -55,6 +117,8 @@ class MockLLMClient:
             return self._complete_test()
         if self.scenario == "multimodal":
             return self._complete_multimodal()
+        if self.scenario == "edit":
+            return self._complete_edit()
         return self._complete_docs(messages)
 
     def _complete_docs(self, messages: list[dict[str, str]]) -> str:
@@ -62,13 +126,13 @@ class MockLLMClient:
             print("[mock_llm_client] scenario=docs choose search_docs")
             return _json_action(
                 "search_docs",
-                {"query": _extract_user_task(messages) or "software architecture", "source": "rag_anything", "top_k": 3},
+                {"query": _extract_user_task(messages) or "software architecture", "source": "hybrid", "top_k": 3},
             )
 
         print("[mock_llm_client] scenario=docs choose final_answer")
         answer = (
-            "根据已解析文档，当前检索结果显示主题与 Graduate Software Engineering / "
-            "Software Engineering 课程指南相关。[ev_001]\n\n"
+            "search_docs 命中的文档证据显示，结果包含 Graduate Software Engineering 和 "
+            "Curriculum Guidelines for Graduate Degree Programs in Software Engineering。 [ev_001]\n\n"
             "证据：\n"
             "- [ev_001] 来自 search_docs 命中的解析文档片段。"
         )
@@ -84,8 +148,8 @@ class MockLLMClient:
 
         print("[mock_llm_client] scenario=code choose final_answer")
         answer = (
-            "search_docs 工具在 demo/app.py 的 build_registry 中注册，并通过 ask 流程交给 "
-            "ToolRegistry 执行。[ev_001][ev_002]\n\n"
+            "search_docs 在 demo/app.py 中被导入，并在 build_registry() -> ToolRegistry 中通过 "
+            "registry.register(\"search_docs\", ...) 注册。 [ev_001][ev_002]\n\n"
             "证据：\n"
             "- [ev_001] 来自 search_code 对 search_docs 的命中。\n"
             "- [ev_002] 来自 view_file 读取的 demo/app.py 注册片段。"
@@ -122,12 +186,13 @@ class MockLLMClient:
 
         print("[mock_llm_client] scenario=fix choose final_answer")
         answer = (
-            "轻量修复建议是强化 agent/verifier.py 中 final_answer 的证据引用校验，并用 mock "
-            "Agent 链路验证 evidence 与 trajectory 是否仍然正常。[ev_001][ev_002][ev_003][ev_004]\n\n"
+            "agent/verifier.py 包含 EVIDENCE_REF_PATTERN 和 verify_final_answer；generate_patch "
+            "已生成 agent/verifier.py 的 patch suggestion，suggest_tests 已给出验证命令建议。 "
+            "[ev_001][ev_002][ev_003][ev_004]\n\n"
             "证据：\n"
-            "- [ev_001] 定位到 evidence 引用匹配逻辑。\n"
+            "- [ev_001] 定位到 EVIDENCE_REF_PATTERN。\n"
             "- [ev_002] 展示了 verify_final_answer 的实现片段。\n"
-            "- [ev_003] 给出了不改文件的 patch suggestion。\n"
+            "- [ev_003] 给出了 agent/verifier.py 的 patch suggestion。\n"
             "- [ev_004] 给出了测试命令建议。"
         )
         return _json_action("final_answer", {"answer": answer})
@@ -172,7 +237,7 @@ class MockLLMClient:
             print("[mock_llm_client] scenario=multimodal choose search_docs")
             return _json_action(
                 "search_docs",
-                {"query": "Graduate Software Engineering", "source": "rag_anything", "top_k": 1},
+                {"query": "Graduate Software Engineering", "source": "hybrid", "top_k": 1},
             )
         if self._step == 2:
             print("[mock_llm_client] scenario=multimodal choose search_figures")
@@ -186,6 +251,48 @@ class MockLLMClient:
             "证据：\n"
             "- [ev_001] 来自 search_docs 命中的文档正文或结构化 block。\n"
             "- [ev_002] 来自 search_figures 命中的图片或图示 block。"
+        )
+        return _json_action("final_answer", {"answer": answer})
+
+    def _complete_edit(self) -> str:
+        if self._step == 1:
+            print("[mock_llm_client] scenario=edit choose view_file")
+            return _json_action(
+                "view_file",
+                {"path": "outputs/edit_file_sandbox/mock_edit_fixture.py", "start": 1, "end": 40},
+            )
+        if self._step == 2:
+            print("[mock_llm_client] scenario=edit choose edit_file")
+            return _json_action(
+                "edit_file",
+                {
+                    "path": "outputs/edit_file_sandbox/mock_edit_fixture.py",
+                    "operation": "replace",
+                    "old_text": 'VALUE = "before"\n',
+                    "new_text": 'VALUE = "after"\n',
+                    "apply": True,
+                    "evidence_ids": ["ev_001"],
+                },
+            )
+        if self._step == 3:
+            print("[mock_llm_client] scenario=edit choose run_tests")
+            return _json_action(
+                "run_tests",
+                {
+                    "command": "python -m compileall outputs/edit_file_sandbox",
+                    "timeout": 60,
+                    "test_type": "compileall",
+                },
+            )
+
+        print("[mock_llm_client] scenario=edit choose final_answer")
+        answer = (
+            "edit_file 已修改 sandbox 文件 outputs/edit_file_sandbox/mock_edit_fixture.py，"
+            "并已执行 allowlisted compileall 验证，返回码为 0。[ev_001][ev_002][ev_003]\n\n"
+            "证据：\n"
+            "- [ev_001] 来自 view_file 的修改前文件片段。\n"
+            "- [ev_002] 来自 edit_file 的 sandbox diff、hash 和 backup metadata。\n"
+            "- [ev_003] 来自 run_tests 的 compileall 执行结果。"
         )
         return _json_action("final_answer", {"answer": answer})
 

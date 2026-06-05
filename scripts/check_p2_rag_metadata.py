@@ -81,7 +81,7 @@ def _check_evidence_metadata_preserved() -> tuple[str, bool, str]:
     memory = EvidenceMemory()
     evidence_ids = extract_evidence_from_tool_result(
         tool_name="search_docs",
-        args={"query": "Graduate Software Engineering", "source": "rag_anything", "top_k": 3},
+        args={"query": "Graduate Software Engineering", "source": "hybrid", "top_k": 3},
         result=rows,
         evidence_memory=memory,
     )

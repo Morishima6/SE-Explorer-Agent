@@ -1,0 +1,6 @@
+# RAG-Anything is used as the document parsing foundation for books/.
+-e ./RAG-Anything[all]
+
+# Demo CLI loads OpenAI-compatible credentials from .env.
+python-dotenv
+openai

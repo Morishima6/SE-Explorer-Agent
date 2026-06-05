@@ -6,6 +6,44 @@ from agent.evidence_memory import EvidenceMemory
 
 
 EVIDENCE_REF_PATTERN = re.compile(r"\[(ev_\d{3,})\]")
+_SEMANTIC_STOP_WORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "into",
+    "using",
+    "uses",
+    "used",
+    "only",
+    "current",
+    "answer",
+    "evidence",
+    "source",
+    "sources",
+    "final",
+    "tool",
+    "tools",
+    "agent",
+    "mock",
+    "证据",
+    "当前",
+    "根据",
+    "来自",
+    "显示",
+    "主题",
+    "相关",
+    "建议",
+    "实现",
+    "验证",
+    "引用",
+    "文件",
+    "代码",
+    "工具",
+}
 
 
 @dataclass
@@ -14,6 +52,7 @@ class VerificationResult:
     issues: list[str] = field(default_factory=list)
     suggestion: str | None = None
     suggested_next_action: dict[str, object] | None = None
+    semantic_checks: list[dict[str, object]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -58,7 +97,8 @@ class Verifier:
         if evidence_items and not refs:
             issues.append("final_answer is missing evidence references such as [ev_001]")
 
-        existing_ids = {item.evidence_id for item in evidence_items}
+        task_provided_ids = set(extract_evidence_refs(task or ""))
+        existing_ids = {item.evidence_id for item in evidence_items} | task_provided_ids
         missing_refs = [item for item in refs if item not in existing_ids]
         if missing_refs:
             issues.append(f"final_answer references missing evidence ids: {', '.join(missing_refs)}")
@@ -84,10 +124,13 @@ class Verifier:
         if speculation_issue:
             issues.append(speculation_issue)
 
+        semantic_issues, semantic_checks = _check_semantic_grounding(stripped, evidence_memory, refs)
+        issues.extend(semantic_issues)
+
         suggestion = None
         suggested_next_action = None
         if issues:
-            suggestion = "Rewrite the final answer using Evidence Memory and cite real evidence ids."
+            suggestion = "Rewrite the final answer using Evidence Memory and cite real evidence ids; remove or qualify unsupported claims."
             suggested_next_action = _build_suggested_next_action(issues, evidence_memory, task)
 
         result = VerificationResult(
@@ -95,6 +138,7 @@ class Verifier:
             issues=issues,
             suggestion=suggestion,
             suggested_next_action=suggested_next_action,
+            semantic_checks=semantic_checks,
         )
         if suggested_next_action:
             print(f"[verifier] suggested_next_action={suggested_next_action}")
@@ -125,6 +169,7 @@ class Verifier:
             "grep_code",
             "view_file",
             "generate_patch",
+            "edit_file",
             "suggest_tests",
             "shell_readonly",
             "run_tests",
@@ -187,7 +232,7 @@ def _missing_required_evidence_types(evidence_memory: EvidenceMemory, refs: list
 def _missing_available_evidence_types(evidence_memory: EvidenceMemory, refs: list[str]) -> list[str]:
     referenced = set(refs)
     missing: list[str] = []
-    for source_type in ["doc", "code", "file", "table", "figure"]:
+    for source_type in ["doc", "code", "file", "table", "figure", "edit", "edit_preview"]:
         candidates = [item for item in evidence_memory.list() if item.source_type == source_type]
         if candidates and not any(item.evidence_id in referenced for item in candidates):
             missing.append(source_type)
@@ -218,7 +263,12 @@ def _check_unsupported_claims(answer: str, evidence_memory: EvidenceMemory) -> s
 
     modification_claims = ["已修改", "已经修改", "修改了文件", "file was modified", "modified the file"]
     if any(claim in lowered for claim in modification_claims):
-        return "final_answer claims files were modified, but current patch flow only provides suggestions"
+        has_edit = any(
+            item.source_type == "edit" and item.metadata.get("apply") is True
+            for item in evidence_memory.list()
+        )
+        if not has_edit:
+            return "final_answer claims files were modified without applied edit_file evidence"
     return None
 
 
@@ -229,12 +279,177 @@ def _check_speculation(answer: str) -> str | None:
     return None
 
 
+def _check_semantic_grounding(
+    answer: str,
+    evidence_memory: EvidenceMemory,
+    refs: list[str],
+) -> tuple[list[str], list[dict[str, object]]]:
+    if not answer or not refs:
+        return [], []
+
+    referenced_items = [item for item in (evidence_memory.get(ref) for ref in refs) if item is not None]
+    if not referenced_items:
+        return [], []
+
+    evidence_text = "\n".join(_evidence_grounding_text(item) for item in referenced_items)
+    evidence_terms = set(_semantic_terms(evidence_text))
+    evidence_numbers = set(_numbers(evidence_text))
+    issues: list[str] = []
+    checks: list[dict[str, object]] = []
+
+    for claim in _extract_fact_claims(answer):
+        terms = _semantic_terms(claim)
+        if len(terms) < 3:
+            continue
+
+        matched_terms = [term for term in terms if term in evidence_terms]
+        identifier_terms = _identifier_terms(claim)
+        missing_identifier_terms = [term for term in identifier_terms if term not in evidence_terms]
+        claim_numbers = _numbers(claim)
+        missing_numbers = [number for number in claim_numbers if number not in evidence_numbers]
+        coverage = len(matched_terms) / len(terms) if terms else 1.0
+        supported = (
+            coverage >= _semantic_threshold(len(terms))
+            and not missing_identifier_terms
+            and not missing_numbers
+        )
+
+        checks.append(
+            {
+                "claim": claim,
+                "term_count": len(terms),
+                "matched_term_count": len(matched_terms),
+                "coverage": round(coverage, 3),
+                "matched_terms": matched_terms[:12],
+                "missing_identifier_terms": missing_identifier_terms[:8],
+                "missing_numbers": missing_numbers[:8],
+                "supported": supported,
+            }
+        )
+        if supported:
+            continue
+
+        reason_parts: list[str] = []
+        if coverage < _semantic_threshold(len(terms)):
+            reason_parts.append(f"semantic coverage {coverage:.2f}")
+        if missing_identifier_terms:
+            reason_parts.append("missing identifiers " + ", ".join(missing_identifier_terms[:4]))
+        if missing_numbers:
+            reason_parts.append("missing numbers " + ", ".join(missing_numbers[:4]))
+        issues.append(
+            "final_answer has unsupported semantic claim: "
+            f"{_shorten_text(claim, 120)} ({'; '.join(reason_parts)})"
+        )
+
+    return issues, checks
+
+
+def _extract_fact_claims(answer: str) -> list[str]:
+    main_text = _answer_body_before_evidence_list(answer)
+    cleaned = EVIDENCE_REF_PATTERN.sub("", main_text)
+    cleaned = re.sub(r"```.*?```", " ", cleaned, flags=re.DOTALL)
+    raw_parts = re.split(r"[\n。！？!?；;]+", cleaned)
+    claims: list[str] = []
+    for part in raw_parts:
+        claim = part.strip(" -:\t\r")
+        if not claim:
+            continue
+        lowered = claim.lower()
+        if lowered in {"evidence", "sources", "证据", "引用"}:
+            continue
+        if len(_semantic_terms(claim)) < 3:
+            continue
+        claims.append(claim)
+    return claims[:8]
+
+
+def _answer_body_before_evidence_list(answer: str) -> str:
+    markers = ["\n证据：", "\n证据:", "\nEvidence:", "\nEvidence：", "\nSources:", "\nReferences:"]
+    positions = [answer.find(marker) for marker in markers if answer.find(marker) >= 0]
+    if not positions:
+        return answer
+    return answer[: min(positions)]
+
+
+def _evidence_grounding_text(item: Any) -> str:
+    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+    metadata_values = " ".join(str(value) for value in metadata.values() if isinstance(value, (str, int, float)))
+    return "\n".join(
+        [
+            item.source_type,
+            item.source,
+            item.line_range or "",
+            item.reason,
+            item.content,
+            metadata_values,
+        ]
+    )
+
+
+def _semantic_terms(text: str) -> list[str]:
+    normalized = text.lower()
+    latin_terms = re.findall(r"[a-z0-9_./\\-]+", normalized)
+    cjk_terms: list[str] = []
+    if not latin_terms:
+        cjk_chars = re.findall(r"[\u4e00-\u9fff]", normalized)
+        cjk_terms = ["".join(cjk_chars[index : index + 2]) for index in range(0, max(len(cjk_chars) - 1, 0))]
+    raw_terms = latin_terms + cjk_terms
+    terms: list[str] = []
+    for term in raw_terms:
+        for piece in re.split(r"[./\\\-]+", term):
+            if not piece or piece in _SEMANTIC_STOP_WORDS:
+                continue
+            if piece.startswith("ev_"):
+                continue
+            if len(piece) < 2 and not piece.isdigit():
+                continue
+            if piece not in terms:
+                terms.append(piece)
+    return terms
+
+
+def _identifier_terms(text: str) -> list[str]:
+    identifiers: list[str] = []
+    for item in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text):
+        lowered = item.lower()
+        if "_" not in lowered:
+            continue
+        if lowered not in identifiers:
+            identifiers.append(lowered)
+    return identifiers
+
+
+def _numbers(text: str) -> list[str]:
+    return re.findall(r"\b\d+(?:\.\d+)?\b", text)
+
+
+def _semantic_threshold(term_count: int) -> float:
+    if term_count <= 4:
+        return 0.5
+    if term_count <= 8:
+        return 0.4
+    return 0.32
+
+
+def _shorten_text(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "..."
+
+
 def _build_suggested_next_action(
     issues: list[str],
     evidence_memory: EvidenceMemory,
     task: str | None,
 ) -> dict[str, object]:
     issue_text = " ".join(issues).lower()
+
+    if "unsupported semantic claim" in issue_text:
+        return {
+            "tool": "final_answer",
+            "args": {"answer": "Rewrite unsupported claims so each factual claim is grounded in cited evidence ids."},
+            "reason": "semantic fact checking found an unsupported claim",
+        }
 
     if "patch" in issue_text:
         return {
@@ -254,6 +469,20 @@ def _build_suggested_next_action(
             "reason": "test evidence is required or must be cited for this answer",
         }
 
+    if "modified without applied edit_file evidence" in issue_text:
+        return {
+            "tool": "edit_file",
+            "args": {
+                "path": _first_file_source(evidence_memory),
+                "operation": "replace",
+                "old_text": "",
+                "new_text": "",
+                "apply": False,
+                "evidence_ids": _all_evidence_ids(evidence_memory),
+            },
+            "reason": "a modification claim requires applied edit_file evidence",
+        }
+
     if "missing available evidence type refs" in issue_text or "missing evidence references" in issue_text:
         return {
             "tool": "final_answer",
@@ -261,7 +490,11 @@ def _build_suggested_next_action(
             "reason": "evidence exists but the answer did not cite enough relevant evidence",
         }
 
-    if "references missing evidence ids" in issue_text or "not directly address" in issue_text or "speculation" in issue_text:
+    if (
+        "references missing evidence ids" in issue_text
+        or "not directly address" in issue_text
+        or "speculation" in issue_text
+    ):
         return {
             "tool": "final_answer",
             "args": {"answer": "Rewrite the answer to directly address the user task and cite only real evidence ids."},
@@ -277,14 +510,14 @@ def _build_suggested_next_action(
 
     return {
         "tool": "search_docs",
-        "args": {"query": task or "software engineering", "source": "rag_anything", "top_k": 3},
+        "args": {"query": task or "software engineering", "source": "hybrid", "top_k": 3},
         "reason": "no usable evidence is available yet",
     }
 
 
 def _first_file_source(evidence_memory: EvidenceMemory) -> str:
     for item in evidence_memory.list():
-        if item.source_type in {"file", "code", "patch"}:
+        if item.source_type in {"file", "code", "patch", "edit", "edit_preview"}:
             return item.source
     return "agent/verifier.py"
 

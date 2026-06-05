@@ -19,6 +19,8 @@ def main() -> int:
         _check_vague_answer(),
         _check_patch_test_not_cited(),
         _check_task_coverage(),
+        _check_semantic_fact_mismatch(),
+        _check_semantic_fact_supported(),
         _check_valid_answer(),
     ]
     passed = all(item[1] for item in checks)
@@ -86,6 +88,39 @@ def _check_task_coverage() -> tuple[str, bool, str]:
         task="explain verifier evidence validation",
     )
     return _expect_fail("task coverage", result, "not directly address")
+
+
+def _check_semantic_fact_mismatch() -> tuple[str, bool, str]:
+    memory = EvidenceMemory()
+    memory.add(
+        "code",
+        "demo/app.py",
+        'registry.register("search_docs", "Search parsed docs", search_docs)',
+        "tool registry evidence",
+    )
+    result = Verifier().verify_final_answer(
+        "run_tests is registered in demo/app.py. [ev_001]",
+        memory,
+        task="explain run_tests registration",
+    )
+    return _expect_fail("semantic fact mismatch", result, "unsupported semantic claim")
+
+
+def _check_semantic_fact_supported() -> tuple[str, bool, str]:
+    memory = EvidenceMemory()
+    memory.add(
+        "code",
+        "demo/app.py",
+        'registry.register("search_docs", "Search parsed docs", search_docs)',
+        "tool registry evidence",
+    )
+    result = Verifier().verify_final_answer(
+        "search_docs is registered in demo/app.py. [ev_001]",
+        memory,
+        task="explain search_docs registration",
+    )
+    ok = result.passed and result.semantic_checks and result.semantic_checks[0]["supported"] is True
+    return "semantic fact supported", ok, "" if ok else str(result.to_dict())
 
 
 def _check_valid_answer() -> tuple[str, bool, str]:

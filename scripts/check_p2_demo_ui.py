@@ -27,6 +27,7 @@ def main() -> int:
             _check_examples(port),
             _check_tools(port),
             _check_static_index(port),
+            _check_static_app(port),
             _check_mock_ask(port),
             _check_evidence_output(port),
             _check_trajectory_output(port),
@@ -58,11 +59,8 @@ def _start_server(port: int) -> subprocess.Popen[str]:
     return subprocess.Popen(
         command,
         cwd=PROJECT_ROOT,
-        stdout=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
     )
 
 
@@ -80,8 +78,7 @@ def _check_server_start(process: subprocess.Popen[str], port: int) -> tuple[str,
     last_error = ""
     while time.time() < deadline:
         if process.poll() is not None:
-            output = process.stdout.read() if process.stdout else ""
-            return "server start", False, f"server exited returncode={process.returncode}; output={output[-1000:]}"
+            return "server start", False, f"server exited returncode={process.returncode}"
         try:
             data = _get_json(port, "/api/health")
             if data.get("ok") is True:
@@ -116,8 +113,35 @@ def _check_tools(port: int) -> tuple[str, bool, str]:
 
 def _check_static_index(port: int) -> tuple[str, bool, str]:
     text = _get_text(port, "/")
-    ok = "SE-Explorer Agent" in text and "Trajectory" in text and "Evidence" in text
+    ok = (
+        "SE-Explorer Agent" in text
+        and "Trajectory" in text
+        and "Evidence" in text
+        and "Project Explorer" in text
+        and "selectProjectButton" in text
+        and "projectRoot" in text
+        and "applyProjectPromptButton" in text
+        and "project-workspace" in text
+        and "code-viewer" in text
+        and 'id="reportOutput" class="report-output"' in text
+        and "<pre id=\"reportOutput\"" not in text
+        and 'id="maxStepsInput" type="number" min="1" max="50" value="10"' in text
+    )
     return "static index", ok, "" if ok else text[:300]
+
+
+def _check_static_app(port: int) -> tuple[str, bool, str]:
+    text = _get_text(port, "/app.js")
+    ok = (
+        "UI-provided code evidence" in text
+        and "901 + index" in text
+        and "/api/select-project-root" in text
+        and "Project Root:" in text
+        and "project_root" in text
+        and "renderReportMarkdown" in text
+        and "renderMarkdownTable" in text
+    )
+    return "static app.js", ok, "" if ok else text[:300]
 
 
 def _check_mock_ask(port: int) -> tuple[str, bool, str]:
@@ -157,7 +181,7 @@ def _check_reports(port: int) -> tuple[str, bool, str]:
     data = _get_json(port, "/api/reports")
     reports = data.get("reports", [])
     report_types = {item.get("type") for item in reports if isinstance(item, dict)}
-    ok = {"baseline", "difficulty", "human_scoring"}.issubset(report_types)
+    ok = {"baseline", "difficulty", "human_scoring", "real_baseline_sample", "hybrid_rag_eval"}.issubset(report_types)
     return "reports endpoint", ok, "" if ok else str(data)
 
 

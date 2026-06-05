@@ -33,6 +33,9 @@ def extract_evidence_from_tool_result(
     if tool_name == "generate_patch":
         return _extract_generate_patch(args, result, evidence_memory)
 
+    if tool_name == "edit_file":
+        return _extract_edit_file(args, result, evidence_memory)
+
     if tool_name == "suggest_tests":
         return _extract_suggest_tests(args, result, evidence_memory)
 
@@ -162,6 +165,53 @@ def _extract_generate_patch(
         metadata={
             "instruction": str(result.get("instruction", args.get("instruction", ""))),
             "input_evidence_ids": result.get("evidence_ids", []),
+        },
+    )
+    return [evidence.evidence_id]
+
+
+def _extract_edit_file(
+    args: dict[str, Any],
+    result: Any,
+    evidence_memory: EvidenceMemory,
+) -> list[str]:
+    if not isinstance(result, dict):
+        return []
+
+    diff = str(result.get("diff", ""))
+    if not diff:
+        return []
+
+    apply_value = result.get("apply") is True
+    source_type = "edit" if apply_value else "edit_preview"
+    content = "\n".join(
+        item
+        for item in [
+            f"operation: {result.get('operation', args.get('operation', ''))}",
+            f"apply: {apply_value}",
+            f"changed: {result.get('changed')}",
+            f"before_hash: {result.get('before_hash')}",
+            f"after_hash: {result.get('after_hash')}",
+            f"backup_path: {result.get('backup_path')}" if result.get("backup_path") else "",
+            "diff:",
+            diff,
+        ]
+        if item
+    )
+    evidence = evidence_memory.add(
+        source_type=source_type,
+        source=str(result.get("path", args.get("path", "unknown"))),
+        content=content,
+        reason="edit_file applied a sandboxed edit" if apply_value else "edit_file previewed a sandboxed edit",
+        metadata={
+            "operation": str(result.get("operation", args.get("operation", ""))),
+            "apply": apply_value,
+            "changed": result.get("changed"),
+            "before_hash": result.get("before_hash"),
+            "after_hash": result.get("after_hash"),
+            "backup_path": result.get("backup_path", ""),
+            "input_evidence_ids": result.get("evidence_ids", []),
+            "policy": result.get("policy", {}),
         },
     )
     return [evidence.evidence_id]

@@ -49,6 +49,7 @@ from agent.tool_registry import ToolRegistry
 from agent.trajectory import TrajectoryLogger
 from rag.rag_anything_config import RAGAnythingProjectConfig
 from rag.rag_anything_loader import RAGAnythingLoader
+from tools.edit_file import edit_file
 from tools.generate_patch import generate_patch
 from tools.grep_code import grep_code
 from tools.list_repo_tree import list_repo_tree
@@ -69,14 +70,31 @@ def _final_answer_tool(answer: str) -> dict[str, object]:
 
 def build_registry() -> ToolRegistry:
     registry = ToolRegistry()
-    registry.register("list_repo_tree", "查看仓库目录结构", list_repo_tree)
-    registry.register("view_file", "读取文件片段", view_file)
-    registry.register("grep_code", "关键词搜索代码或文本文件", grep_code)
-    registry.register("search_code", "按关键词搜索代码文件", search_code)
-    registry.register("search_docs", "检索 RAG-Anything 解析后的软件工程文档", search_docs)
+    registry.register(
+        "list_repo_tree",
+        "查看仓库目录结构；参数：path、max_depth、project_root；真实项目任务必须使用用户给定 project_root",
+        list_repo_tree,
+    )
+    registry.register(
+        "view_file",
+        "读取文件片段；参数：path、start、end、project_root；不支持 line_range/end_line；真实项目相对路径必须带 project_root",
+        view_file,
+    )
+    registry.register(
+        "grep_code",
+        "关键词/正则搜索代码或文本文件；参数：pattern、path、max_results、project_root；真实项目任务必须使用 project_root",
+        grep_code,
+    )
+    registry.register(
+        "search_code",
+        "按关键词搜索代码文件；参数：query、path、top_k、project_root；真实项目任务必须使用 project_root，避免搜索当前 SE-Explorer-Agent",
+        search_code,
+    )
+    registry.register("search_docs", "使用 Hybrid RAG 检索 RAG-Anything 解析后的软件工程文档；真实项目代码分析任务不要使用此工具", search_docs)
     registry.register("search_tables", "检索 RAG-Anything 解析结果中的表格 block", search_tables)
     registry.register("search_figures", "检索 RAG-Anything 解析结果中的图片或图示 block", search_figures)
     registry.register("generate_patch", "生成 unified diff 修复建议，不直接修改文件", generate_patch)
+    registry.register("edit_file", "受控修改 sandbox 内文本文件，返回 diff、hash 与 backup metadata", edit_file)
     registry.register("suggest_tests", "生成测试命令和验证建议，不直接执行", suggest_tests)
     registry.register("run_tests", "run allowlisted test commands and return structured test results", run_tests)
     registry.register("final_answer", "输出最终答案，参数为 answer", _final_answer_tool)
@@ -110,7 +128,7 @@ def main() -> int:
     docs_parser = subparsers.add_parser("search-docs", help="搜索解析后的文档")
     docs_parser.add_argument("query")
     docs_parser.add_argument("--top-k", type=int, default=5)
-    docs_parser.add_argument("--source", default="rag_anything", choices=["rag_anything", "all", "raw"])
+    docs_parser.add_argument("--source", default="hybrid", choices=["hybrid", "rag", "rag_anything", "all", "raw"])
 
     tables_parser = subparsers.add_parser("search-tables", help="搜索解析后的表格 block")
     tables_parser.add_argument("query")
@@ -124,7 +142,7 @@ def main() -> int:
     ask_parser.add_argument("question")
     ask_parser.add_argument("--max-steps", type=int, default=6)
     ask_parser.add_argument("--mock", action="store_true")
-    ask_parser.add_argument("--mock-scenario", default="docs", choices=["docs", "code", "fix", "test", "multimodal"])
+    ask_parser.add_argument("--mock-scenario", default="docs", choices=["docs", "code", "fix", "test", "multimodal", "edit"])
     ask_parser.add_argument("--model", default=None)
     ask_parser.add_argument("--task-id", default="demo_task")
 
@@ -167,8 +185,7 @@ def main() -> int:
         return 0
 
     if args.command == "search-docs":
-        source = "all" if args.source == "raw" else args.source
-        _print_json(search_docs(query=args.query, source=source, top_k=args.top_k))
+        _print_json(search_docs(query=args.query, source=args.source, top_k=args.top_k))
         return 0
 
     if args.command == "search-tables":

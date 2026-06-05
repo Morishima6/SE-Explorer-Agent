@@ -16,54 +16,15 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from agent.llm_client import LLMClient, MockLLMClient
-from agent.loop import AgentLoop
-from agent.trajectory import TrajectoryLogger
-from demo.app import _load_project_env, _validate_real_llm_env, build_registry
-
-
-EXAMPLES = [
-    {
-        "id": "docs",
-        "label": "Docs QA",
-        "question": "software architecture",
-        "mock_scenario": "docs",
-        "max_steps": 3,
-        "task_id": "ui_demo_docs",
-    },
-    {
-        "id": "code",
-        "label": "Code QA",
-        "question": "search_docs 工具在哪里注册和调用？",
-        "mock_scenario": "code",
-        "max_steps": 4,
-        "task_id": "ui_demo_code",
-    },
-    {
-        "id": "fix",
-        "label": "Fix Suggestion",
-        "question": "请给出 verifier 缺少证据引用时的轻量修复建议和测试建议",
-        "mock_scenario": "fix",
-        "max_steps": 6,
-        "task_id": "ui_demo_fix",
-    },
-    {
-        "id": "test",
-        "label": "Test Run",
-        "question": "compileall validation for shell_readonly test_run evidence",
-        "mock_scenario": "test",
-        "max_steps": 5,
-        "task_id": "ui_demo_test",
-    },
-    {
-        "id": "multimodal",
-        "label": "Multimodal",
-        "question": "Explain document and figure evidence from parsed RAG-Anything outputs",
-        "mock_scenario": "multimodal",
-        "max_steps": 4,
-        "task_id": "ui_demo_multimodal",
-    },
-]
+from demo.backend_services import (
+    get_examples,
+    get_tools,
+    load_reports,
+    read_evidence,
+    read_trajectory,
+    run_agent_from_payload,
+    select_project_root,
+)
 
 
 def main() -> int:
@@ -92,39 +53,53 @@ class DemoUIHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "service": "se-explorer-demo-ui"})
             return
         if parsed.path == "/api/examples":
-            self._send_json({"examples": EXAMPLES})
+            self._send_json({"examples": get_examples()})
             return
         if parsed.path == "/api/tools":
-            tools = [
-                {"name": tool.name, "description": tool.description}
-                for tool in build_registry().list_tools()
-            ]
-            self._send_json({"tools": tools})
+            self._send_json({"tools": get_tools()})
             return
         if parsed.path == "/api/evidence":
-            task_id = _safe_task_id(parse_qs(parsed.query).get("task_id", ["ui_demo_docs"])[0])
-            self._send_json({"task_id": task_id, "evidence": _read_jsonl(PROJECT_ROOT / "outputs" / "evidence" / f"{task_id}.jsonl")})
+            task_id = parse_qs(parsed.query).get("task_id", ["ui_demo_docs"])[0]
+            self._send_json(read_evidence(task_id))
             return
         if parsed.path == "/api/trajectory":
-            task_id = _safe_task_id(parse_qs(parsed.query).get("task_id", ["ui_demo_docs"])[0])
-            self._send_json({"task_id": task_id, "trajectory": _read_jsonl(PROJECT_ROOT / "outputs" / "trajectories" / f"{task_id}.jsonl")})
+            task_id = parse_qs(parsed.query).get("task_id", ["ui_demo_docs"])[0]
+            self._send_json(read_trajectory(task_id))
             return
         if parsed.path == "/api/reports":
-            self._send_json({"reports": _load_reports()})
+            self._send_json({"reports": load_reports()})
             return
         self._serve_static(parsed.path)
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path != "/api/ask":
-            self._send_json({"error": "not found"}, status=404)
+        if parsed.path == "/api/select-project-root":
+            try:
+                self._send_json(select_project_root())
+            except ValueError as exc:
+                print(f"[demo_ui] select project root failed: {exc}")
+                self._send_error(str(exc), status=400)
+            except Exception as exc:
+                print(f"[demo_ui] select project root failed: {exc}")
+                self._send_error(str(exc), status=500)
             return
-        payload = self._read_payload()
+        if parsed.path != "/api/ask":
+            self._send_error("not found", status=404)
+            return
         try:
+            payload = self._read_payload()
             response = run_agent_from_payload(payload)
+        except json.JSONDecodeError as exc:
+            print(f"[demo_ui] invalid json payload: {exc}")
+            self._send_error("invalid json payload", status=400)
+            return
+        except ValueError as exc:
+            print(f"[demo_ui] bad request: {exc}")
+            self._send_error(str(exc), status=400)
+            return
         except Exception as exc:
             print(f"[demo_ui] ask failed: {exc}")
-            self._send_json({"error": str(exc)}, status=500)
+            self._send_error(str(exc), status=500)
             return
         self._send_json(response)
 
@@ -140,10 +115,10 @@ class DemoUIHandler(BaseHTTPRequestHandler):
         relative = "index.html" if path in {"", "/"} else path.lstrip("/")
         file_path = (STATIC_DIR / relative).resolve()
         if STATIC_DIR.resolve() not in file_path.parents and file_path != STATIC_DIR.resolve():
-            self._send_json({"error": "invalid static path"}, status=400)
+            self._send_error("invalid static path", status=400)
             return
         if not file_path.exists() or not file_path.is_file():
-            self._send_json({"error": "not found"}, status=404)
+            self._send_error("not found", status=404)
             return
         content_type = _content_type(file_path.suffix)
         data = file_path.read_bytes()
@@ -161,79 +136,8 @@ class DemoUIHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-
-def run_agent_from_payload(payload: dict[str, object]) -> dict[str, object]:
-    question = str(payload.get("question") or "software architecture")
-    task_id = _safe_task_id(str(payload.get("task_id") or "ui_demo_task"))
-    mock = bool(payload.get("mock", True))
-    scenario = str(payload.get("mock_scenario") or "docs")
-    max_steps = int(payload.get("max_steps") or 6)
-    model = payload.get("model")
-
-    print(f"[demo_ui] run ask task_id={task_id}, mock={mock}, scenario={scenario}, max_steps={max_steps}")
-    registry = build_registry()
-    if mock:
-        llm_client = MockLLMClient(scenario=scenario)
-    else:
-        _load_project_env()
-        _validate_real_llm_env(str(model) if model else None)
-        llm_client = LLMClient(model=str(model) if model else None)
-
-    agent = AgentLoop(
-        registry=registry,
-        llm_client=llm_client,
-        max_steps=max_steps,
-        trajectory_logger=TrajectoryLogger(),
-        task_id=task_id,
-    )
-    result = agent.run(question)
-    trajectory_path = PROJECT_ROOT / "outputs" / "trajectories" / f"{task_id}.jsonl"
-    evidence_path = PROJECT_ROOT / "outputs" / "evidence" / f"{task_id}.jsonl"
-    return {
-        "task_id": task_id,
-        "question": question,
-        "answer": result.answer,
-        "verification": result.verification or {},
-        "evidence": result.evidence,
-        "history": result.history,
-        "trajectory": _read_jsonl(trajectory_path),
-        "evidence_path": str(evidence_path.relative_to(PROJECT_ROOT)),
-        "trajectory_path": str(trajectory_path.relative_to(PROJECT_ROOT)),
-    }
-
-
-def _read_jsonl(path: Path) -> list[dict[str, object]]:
-    if not path.exists():
-        return []
-    rows: list[dict[str, object]] = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if line.strip():
-            rows.append(json.loads(line))
-    return rows
-
-
-def _load_reports() -> list[dict[str, object]]:
-    report_specs = [
-        ("baseline", PROJECT_ROOT / "outputs" / "eval_results" / "p1_compare_check_comparison.md"),
-        ("difficulty", PROJECT_ROOT / "outputs" / "eval_results" / "p2_difficulty_check_difficulty_calibration.md"),
-        ("human_scoring", PROJECT_ROOT / "outputs" / "eval_results" / "p2_human_scoring_check_human_scoring.md"),
-    ]
-    reports: list[dict[str, object]] = []
-    for report_type, path in report_specs:
-        reports.append(
-            {
-                "type": report_type,
-                "path": str(path.relative_to(PROJECT_ROOT)),
-                "exists": path.exists(),
-                "content": path.read_text(encoding="utf-8", errors="replace") if path.exists() else "",
-            }
-        )
-    return reports
-
-
-def _safe_task_id(value: str) -> str:
-    cleaned = "".join(char if char.isalnum() or char in {"_", "-"} else "_" for char in value.strip())
-    return cleaned[:80] or "ui_demo_task"
+    def _send_error(self, message: str, status: int) -> None:
+        self._send_json({"error": message}, status=status)
 
 
 def _content_type(suffix: str) -> str:

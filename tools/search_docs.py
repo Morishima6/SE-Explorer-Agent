@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 
+from rag.hybrid_retriever import HybridRetriever
 from rag.rag_anything_loader import RAGAnythingLoader
 
 
@@ -39,17 +40,18 @@ def _fallback_raw_search(query: str, path: str, top_k: int) -> list[dict[str, ob
 
 def search_docs(
     query: str,
-    source: str = "rag_anything",
+    source: str = "hybrid",
     path: str = "books",
     top_k: int = 5,
 ) -> list[dict[str, object]]:
     print(f"[search_docs] query={query}, source={source}, path={path}, top_k={top_k}")
 
-    if source in {"rag_anything", "all"}:
+    if source in {"hybrid", "all", "rag"}:
+        return HybridRetriever(docs_path=path).search(query=query, top_k=top_k)
+
+    if source == "rag_anything":
         loader = RAGAnythingLoader()
         parsed_results = loader.search_parsed_outputs(query=query, top_k=top_k)
-        if parsed_results or source == "rag_anything":
-            return parsed_results
+        return parsed_results
 
     return _fallback_raw_search(query=query, path=path, top_k=top_k)
-

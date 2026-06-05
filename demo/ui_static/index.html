@@ -10,63 +10,145 @@
     <main class="app-shell">
       <section class="workspace">
         <header class="topbar">
-          <div>
+          <div class="brand-block">
+            <span class="eyebrow">Evidence-driven SE Workbench</span>
             <h1>SE-Explorer Agent</h1>
-            <p id="statusText">Ready</p>
+            <p>面向软件工程学习、代码理解和轻量代码审查的证据驱动 Agent</p>
           </div>
-          <button id="refreshReportsButton" type="button">Reports</button>
+          <div class="status-group">
+            <span id="statusText" class="status-pill">Ready</span>
+            <button id="refreshReportsButton" type="button">Refresh Reports</button>
+          </div>
         </header>
 
-        <section class="control-band">
-          <div class="field field-wide">
-            <label for="questionInput">Task</label>
-            <textarea id="questionInput" rows="4">software architecture</textarea>
+        <section class="project-explorer" aria-label="Offline project explorer">
+          <div class="section-head">
+            <div>
+              <h2>Project Explorer</h2>
+              <p class="muted">通过浏览器弹窗选择本地项目，离线查看目录、搜索代码并生成 Agent 任务上下文。</p>
+            </div>
+            <div class="project-actions">
+              <button id="selectProjectButton" type="button">选择项目目录</button>
+              <input id="projectDirectoryInput" type="file" webkitdirectory directory multiple hidden />
+              <button id="applyProjectPromptButton" type="button" class="secondary" disabled>生成 Agent 任务</button>
+            </div>
           </div>
-          <div class="field">
-            <label for="scenarioSelect">Scenario</label>
-            <select id="scenarioSelect">
-              <option value="docs">docs</option>
-              <option value="code">code</option>
-              <option value="fix">fix</option>
-              <option value="test">test</option>
-              <option value="multimodal">multimodal</option>
-            </select>
+
+          <div class="project-summary">
+            <div>
+              <span class="summary-label">Project</span>
+              <strong id="projectName">未选择</strong>
+            </div>
+            <div class="project-root-summary">
+              <span class="summary-label">Project Root</span>
+              <strong id="projectRoot">not selected</strong>
+            </div>
+            <div>
+              <span class="summary-label">Files</span>
+              <strong id="projectFileCount">0</strong>
+            </div>
+            <div>
+              <span class="summary-label">Indexed</span>
+              <strong id="projectIndexedCount">0</strong>
+            </div>
+            <div>
+              <span class="summary-label">Status</span>
+              <strong id="projectStatus">等待选择目录</strong>
+            </div>
           </div>
-          <div class="field compact">
-            <label for="maxStepsInput">Steps</label>
-            <input id="maxStepsInput" type="number" min="1" max="12" value="3" />
-          </div>
-          <div class="field">
-            <label for="taskIdInput">Task ID</label>
-            <input id="taskIdInput" type="text" value="ui_demo_docs" />
-          </div>
-          <div class="actions">
-            <label class="checkline">
-              <input id="mockInput" type="checkbox" checked />
-              <span>Mock</span>
-            </label>
-            <button id="runButton" type="button">Run</button>
+
+          <div class="project-workspace">
+            <section class="project-card">
+              <div class="section-head small">
+                <h3>Directory Tree</h3>
+                <span id="projectTreeCount" class="muted">0 files</span>
+              </div>
+              <div id="projectTree" class="project-tree empty-state">选择项目后显示目录结构。</div>
+            </section>
+
+            <section class="project-main">
+              <div class="project-card search-card">
+                <div class="field">
+                  <label for="projectSearchInput">Code Search</label>
+                  <div class="search-row">
+                    <input id="projectSearchInput" type="text" value="generatePlan|/api/llm/chat|ApiController" />
+                    <button id="projectSearchButton" type="button" class="secondary" disabled>Search</button>
+                  </div>
+                </div>
+                <div id="projectSearchResults" class="project-results empty-state">选择项目后可搜索代码。</div>
+              </div>
+
+              <div class="project-card file-preview-card">
+                <div class="section-head small">
+                  <h3>File Preview</h3>
+                  <span id="projectFilePath" class="muted">no file selected</span>
+                </div>
+                <div id="projectFilePreview" class="code-viewer empty-state">点击目录树或搜索结果查看文件内容。</div>
+              </div>
+            </section>
           </div>
         </section>
 
-        <nav id="exampleBar" class="example-bar"></nav>
+        <section class="control-band" aria-label="Task control">
+          <div class="field field-wide">
+            <label for="questionInput">Software Engineering Task</label>
+            <textarea id="questionInput" rows="4">software architecture</textarea>
+          </div>
+          <div class="control-stack">
+            <div class="control-row">
+              <div class="field">
+                <label for="scenarioSelect">Agent Scenario</label>
+                <select id="scenarioSelect">
+                  <option value="docs">docs</option>
+                  <option value="code">code</option>
+                  <option value="fix">fix</option>
+                  <option value="test">test</option>
+                  <option value="multimodal">multimodal</option>
+                </select>
+              </div>
+              <div class="field compact">
+                <label for="maxStepsInput">Max Steps</label>
+                <input id="maxStepsInput" type="number" min="1" max="50" value="10" />
+              </div>
+            </div>
+            <div class="field">
+              <label for="taskIdInput">Task ID</label>
+              <input id="taskIdInput" type="text" value="ui_demo_docs" />
+            </div>
+            <div class="actions">
+              <label class="checkline">
+                <input id="mockInput" type="checkbox" checked />
+                <span>Mock</span>
+              </label>
+              <button id="runButton" type="button">Run Agent</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="example-section" aria-label="Example tasks">
+          <div class="section-head">
+            <h2>Example Tasks</h2>
+            <span class="muted">可复现实验入口</span>
+          </div>
+          <nav id="exampleBar" class="example-bar"></nav>
+        </section>
 
         <section class="main-grid">
           <section class="answer-panel">
             <div class="section-head">
-              <h2>Answer</h2>
+              <h2>Final Answer</h2>
               <span id="verifierBadge" class="badge neutral">pending</span>
             </div>
-            <pre id="answerOutput"></pre>
+            <pre id="answerOutput" class="empty-state">等待运行 Agent。</pre>
             <div class="section-head small">
-              <h3>Verifier</h3>
+              <h3>Verifier Result</h3>
             </div>
-            <pre id="verificationOutput"></pre>
+            <pre id="verificationOutput" class="empty-state">Verifier 将检查证据引用、事实支撑和任务覆盖。</pre>
           </section>
 
           <section class="evidence-panel">
             <div class="section-head">
-              <h2>Evidence</h2>
+              <h2>Evidence Memory</h2>
               <select id="evidenceFilter">
                 <option value="all">all</option>
                 <option value="doc">doc</option>
@@ -79,17 +161,17 @@
                 <option value="figure">figure</option>
               </select>
             </div>
-            <div id="evidenceList" class="list"></div>
+            <div id="evidenceList" class="list empty-state">暂无 evidence。</div>
           </section>
         </section>
 
         <section class="lower-grid">
           <section>
             <div class="section-head">
-              <h2>Trajectory</h2>
+              <h2>Trajectory Logging</h2>
               <span id="stepCount" class="muted">0 steps</span>
             </div>
-            <div id="trajectoryList" class="list trajectory-list"></div>
+            <div id="trajectoryList" class="list trajectory-list empty-state">暂无 trajectory。</div>
           </section>
 
           <section>
@@ -97,7 +179,7 @@
               <h2>Eval Reports</h2>
               <select id="reportSelect"></select>
             </div>
-            <pre id="reportOutput" class="report-output"></pre>
+            <div id="reportOutput" class="report-output"></div>
           </section>
         </section>
       </section>
